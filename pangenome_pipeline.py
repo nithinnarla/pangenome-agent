@@ -74,7 +74,7 @@ def docker_run(image, command, workdir, capture_output=False):
     info(f"Docker: {' '.join(cmd)}")
     try:
         result = subprocess.run(cmd, capture_output=capture_output,
-                                timeout=900)
+                                text=True, timeout=900)
         return result
     except subprocess.TimeoutExpired:
         err("Docker command timed out after 15 minutes.")
@@ -226,8 +226,8 @@ def step3(gfa_path, workdir):
         abort(3, f"vg convert failed.\n  stderr: {result.stderr if result else 'N/A'}",
               "Verify Docker image 'vg' is available and GFA file is valid.")
 
-    with open(gfa_10_path, "wb") as f:
-        f.write(result.stdout if isinstance(result.stdout, bytes) else result.stdout.encode())
+    with open(gfa_10_path, "w") as f:
+        f.write(result.stdout)
 
     if os.path.getsize(gfa_10_path) == 0:
         abort(3, "Converted GFA is empty.",
@@ -252,10 +252,10 @@ def step4(gfa_10_path, workdir):
     info("── STEP 4: Building ODGI graph (.og) ─────────────────────────")
     gfa_name = Path(gfa_10_path).name
 
-    result = docker_run("odgi", f"build -g {gfa_name} -o {og_name} -P",
+    result = docker_run("odgi", f"odgi build -g {gfa_name} -o {og_name} -P",
                         workdir)
     if result is None or result.returncode != 0:
-        abort(4, f"build failed.\n  stderr: {result.stderr if result else 'N/A'}",
+        abort(4, f"odgi build failed.\n  stderr: {result.stderr if result else 'N/A'}",
               "Verify the GFA 1.0 file is valid.")
 
     if not os.path.exists(og_path):
@@ -281,10 +281,10 @@ def step5(og_path, workdir):
     og_name = Path(og_path).name
 
     result = docker_run("odgi",
-                        f"sort -O -i {og_name} -o {sorted_name} -P",
+                        f"odgi sort -O -i {og_name} -o {sorted_name} -P",
                         workdir)
     if result is None or result.returncode != 0:
-        abort(5, f"sort failed.\n  stderr: {result.stderr if result else 'N/A'}")
+        abort(5, f"odgi sort failed.\n  stderr: {result.stderr if result else 'N/A'}")
 
     if not os.path.exists(sorted_path):
         abort(5, f"Sorted .og file not created: {sorted_path}")
@@ -310,21 +310,18 @@ def step6(sorted_og_path, region, workdir):
     sorted_name = Path(sorted_og_path).name
 
     result = docker_run("odgi",
-                        f"extract -i {sorted_name} -r {region} -o - -P -c 0 -E",
+                        f"odgi extract -i {sorted_name} -r {region} -o - -P -c 0 -E",
                         workdir, capture_output=True)
 
     if result is None or result.returncode != 0:
         abort(6,
-              f"extract failed.\n  stderr: {result.stderr if result else 'N/A'}",
+              f"odgi extract failed.\n  stderr: {result.stderr if result else 'N/A'}",
               "Check that the region reference name matches your GFA.\n"
               "  Tip: grep '^P' your.gfa | cut -f2 | head -1")
 
     with open(sub_path, "wb") as f:
         data = result.stdout
-        if isinstance(data, str):
-            f.write(data.encode('latin-1'))
-        else:
-            f.write(data)
+        f.write(data.encode() if isinstance(data, str) else data)
 
     if os.path.getsize(sub_path) == 0:
         abort(6, f"Subgraph is empty — region '{region}' may not exist in this graph.")
@@ -348,14 +345,14 @@ def step7(sub_og_path, workdir):
     info("── STEP 7: Converting subgraph .og → .gfa ────────────────────")
     sub_name = Path(sub_og_path).name
 
-    result = docker_run("odgi", f"view -i {sub_name} -g",
+    result = docker_run("odgi", f"odgi view -i {sub_name} -g",
                         workdir, capture_output=True)
 
     if result is None or result.returncode != 0:
-        abort(7, f"view failed.\n  stderr: {result.stderr if result else 'N/A'}")
+        abort(7, f"odgi view failed.\n  stderr: {result.stderr if result else 'N/A'}")
 
-    with open(sub_gfa_path, "wb") as f:
-        f.write(result.stdout if isinstance(result.stdout, bytes) else result.stdout.encode())
+    with open(sub_gfa_path, "w") as f:
+        f.write(result.stdout)
 
     if os.path.getsize(sub_gfa_path) == 0:
         abort(7, "Subgraph GFA is empty after conversion.")
@@ -658,14 +655,54 @@ def print_summary(output_path):
 # ────────────────────────────────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────────────────────────────────
+# ── Auto-detect region from converted GFA 1.0 ────────────────────────────────
+def extract_reference_name(gfa_10_path):
+    """
+    Read P lines from a GFA 1.0 file and return the first reference name.
+    After vg converts 1.1 → 1.0, P lines appear in format:
+      P  MM26#0#Hg_chrom6_MM26  ...
+    We grab column 2 (index 1) from the first P line.
+    """
+    try:
+        with open(gfa_10_path, "rb") as f:
+            for raw in f:
+                try:
+                    line = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                if line.startswith("P"):
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 2:
+                        return parts[1]
+    except Exception as e:
+        err(f"Could not read GFA for reference name: {e}")
+    return None
+
+def build_region(gfa_10_path, start, end):
+    """
+    Build a region string like MM26#0#Hg_chrom6_MM26:520000-570000
+    from the converted GFA 1.0 file + user-supplied coordinates.
+    """
+    ref = extract_reference_name(gfa_10_path)
+    if ref is None:
+        abort(0, "Could not auto-detect reference name from GFA 1.0.",
+              "Use --region manually, e.g. --region MM26#0#Hg_chrom6_MM26:520000-570000")
+    region = f"{ref}:{start}-{end}"
+    ok(f"Auto-detected region: {region}")
+    return region
+
 def main():
     parser = argparse.ArgumentParser(
         description="Pangenome Pipeline 4 — VCF Region Extractor + Human-Readable Parser"
     )
     parser.add_argument("--gfa",      required=True, help="Input .gfa or .gfa.gz")
     parser.add_argument("--vcf",      required=True, help="Input .vcf or .vcf.gz")
-    parser.add_argument("--region",   required=True,
-        help='Region to extract, e.g. "MM26#0#Hg_chrom6_MM26:520000-570000"')
+    parser.add_argument("--region",   required=False, default=None,
+        help='Region string e.g. "MM26#0#Hg_chrom6_MM26:520000-570000" — auto-detected if not provided')
+    parser.add_argument("--start",    type=int, default=None,
+        help="Region start coordinate (used with --end when --region is not given)")
+    parser.add_argument("--end",      type=int, default=None,
+        help="Region end coordinate (used with --start when --region is not given)")
     parser.add_argument("--workdir",  default="pipeline_output",
         help="Output directory for all intermediate + final files")
     parser.add_argument("--reset",    action="store_true",
@@ -674,6 +711,11 @@ def main():
         help="Mark steps 1 through N-1 as done and start from step N")
     args = parser.parse_args()
 
+    # Validate region args
+    if args.region is None:
+        if args.start is None or args.end is None:
+            parser.error("Provide either --region or both --start and --end.")
+
     os.makedirs(args.workdir, exist_ok=True)
 
     print(BOLD + CYAN)
@@ -681,7 +723,10 @@ def main():
     print("  PANGENOME PIPELINE 4")
     print(f"  GFA    : {args.gfa}")
     print(f"  VCF    : {args.vcf}")
-    print(f"  Region : {args.region}")
+    if args.region:
+        print(f"  Region : {args.region}")
+    else:
+        print(f"  Region : auto-detect from GFA (start={args.start}, end={args.end})")
     print(f"  Output : {args.workdir}")
     print("=" * 60)
     print(RESET, flush=True)
@@ -715,10 +760,17 @@ def main():
     if not os.path.exists(gfa_wdir):
         shutil.copy2(gfa_unc, gfa_wdir)
 
-    gfa_10       = step3(gfa_wdir, workdir)
+    gfa_10 = step3(gfa_wdir, workdir)
+
+    # Build region string — explicit or auto-detected from GFA
+    if args.region:
+        region = args.region
+    else:
+        region = build_region(gfa_10, args.start, args.end)
+
     og_path      = step4(gfa_10, workdir)
     sorted_og    = step5(og_path, workdir)
-    sub_og       = step6(sorted_og, args.region, workdir)
+    sub_og       = step6(sorted_og, region, workdir)
     sub_gfa      = step7(sub_og, workdir)
     min_n, max_n = step8(sub_gfa)
 
