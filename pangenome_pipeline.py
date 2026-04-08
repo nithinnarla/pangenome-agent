@@ -226,8 +226,8 @@ def step3(gfa_path, workdir):
         abort(3, f"vg convert failed.\n  stderr: {result.stderr if result else 'N/A'}",
               "Verify Docker image 'vg' is available and GFA file is valid.")
 
-    with open(gfa_10_path, "w") as f:
-        f.write(result.stdout)
+    with open(gfa_10_path, "wb") as f:
+        f.write(result.stdout if isinstance(result.stdout, bytes) else result.stdout.encode())
 
     if os.path.getsize(gfa_10_path) == 0:
         abort(3, "Converted GFA is empty.",
