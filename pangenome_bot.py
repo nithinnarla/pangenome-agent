@@ -226,10 +226,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Default response ──────────────────────────────────────────────────────
     await update.message.reply_text(
-        "I am the Soybean Pangenome Bot.\n\n"
-        "Tell me a chromosomal region to analyze, e.g.:\n"
-        "  Give me variants in chr6 between 520000 and 570000\n\n"
-        "Type /help for instructions."
+        "🧬 Your Pangenome Assistant\n\n"
+        "I'm here to help you search for structural variants across regions of interest in your pangenome graphs.\n\n"
+        "Send me a message like: Give me the variants in chromosome 7 between 15000 and 17000\n\n"
+        "Or type /help for more info"
     )
 
 
