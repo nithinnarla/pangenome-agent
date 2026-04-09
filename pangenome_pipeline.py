@@ -16,6 +16,9 @@ Usage:
 Options:
   --reset        Clear all checkpoints and run from scratch
   --skip-step N  Skip to step N if earlier steps keep erroring
+
+Current inputs: GFA (.gfa / .gfa.gz) + VCF (.vcf / .vcf.gz)
+Future inputs:  GFF and FASTA support will be added when available from Lucas.
 """
 
 import os
