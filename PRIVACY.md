@@ -12,4 +12,4 @@ File paths you provide (GFA, VCF) are used only to run the pangenome pipeline lo
 No data is shared with third parties.
 
 ## Contact
-nithinnarla@gmail.com
+nithincf20013@gmail.com
