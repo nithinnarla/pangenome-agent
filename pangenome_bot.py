@@ -49,7 +49,7 @@ WELCOME = (
 )
 
 HELP = (
-    "How to use this bot:\n\n"
+    "📖 How to use this bot:\n\n"
     "1. Tell me a chromosomal region, e.g.:\n"
     "   Find variants in chr6 between 520000 and 570000\n\n"
     "2. I will ask for your GFA file path\n"
@@ -75,7 +75,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_state.pop(uid, None)
-    await update.message.reply_text("Cancelled. Send a new request whenever you are ready.")
+    await update.message.reply_text("🚫 Cancelled. Send a new request whenever you are ready.")
 
 
 # ── Region parser ─────────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[uid]["gfa"] = gfa_path
         user_state[uid]["step"] = "waiting_vcf"
         await update.message.reply_text(
-            "✅ GFA file found.\n\nNow send me the full path to your VCF or VCF.gz file:"
+            "✅ GFA file found.\n\n🧬 Now send me the full path to your VCF or VCF.gz file:"
         )
         return
 
@@ -170,7 +170,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if proc.returncode != 0:
             error_msg = stderr.decode(errors="replace")[-1000:]
-            await update.message.reply_text(f"Pipeline failed:\n\n{error_msg}")
+            await update.message.reply_text(f"❌ Pipeline failed:\n\n{error_msg}")
             return
 
         # Read output file
@@ -184,7 +184,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = output_file.read_text()
         if not result.strip():
             await update.message.reply_text(
-                f"Pipeline complete. No variants found in region {start}-{end}."
+                f"🔍 Pipeline complete. No variants found in region {start}-{end}."
             )
             return
 
@@ -196,7 +196,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(header + result)
         else:
             await update.message.reply_text(
-                header + "✅ Result is large — sending as file."
+                header + "📄 Result is large — sending as file."
             )
             await update.message.reply_document(
                 document=output_file.open("rb"),
