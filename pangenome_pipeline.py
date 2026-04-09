@@ -485,6 +485,79 @@ def step9(vcf_path, min_n, max_n, workdir):
     save_checkpoint(STEP)
     return subset_path
 
+
+# ────────────────────────────────────────────────────────────────────────────
+# LUCAS STEP 10 HELPERS — VCF filtering + summary (Lucas Borges dos Santos)
+# ────────────────────────────────────────────────────────────────────────────
+def extract_structural_variants(vcf_filepath: str, min_length: int = 50) -> list:
+    """
+    Parses a VCF file and extracts variants where REF or any ALT exceeds min_length.
+    Uses actual sample names from VCF header.
+    """
+    import os
+    if not os.path.exists(vcf_filepath):
+        raise FileNotFoundError(f"VCF file not found at: {vcf_filepath}")
+
+    filtered_variants = []
+    sample_names = []
+
+    with open(vcf_filepath, 'r') as vcf:
+        for line in vcf:
+            if line.startswith('##'):
+                continue
+            if line.startswith('#CHROM'):
+                columns = line.strip().split('\t')
+                if len(columns) > 9:
+                    sample_names = columns[9:]
+                continue
+            parts = line.strip().split('\t')
+            if len(parts) < 9:
+                continue
+            chrom    = parts[0]
+            pos      = parts[1]
+            ref_seq  = parts[3]
+            alt_seqs = parts[4].split(',')
+            ref_len  = len(ref_seq)
+            alt_lens = [len(alt) for alt in alt_seqs]
+            if ref_len > min_length or any(a > min_length for a in alt_lens):
+                genotypes = {}
+                if len(parts) > 9:
+                    for i, sample_data in enumerate(parts[9:]):
+                        s_name = sample_names[i] if i < len(sample_names) else f"Sample_{i+1}"
+                        gt_call = sample_data.split(':')[0]
+                        genotypes[s_name] = gt_call
+                filtered_variants.append({
+                    "chromosome": chrom,
+                    "position":   pos,
+                    "ref_length": ref_len,
+                    "alt_lengths": alt_lens,
+                    "genotypes":  genotypes
+                })
+    return filtered_variants
+
+
+def summarize_variants(variants_data: list) -> str:
+    """
+    Generates a human-readable summary of the extracted variants (Lucas style).
+    """
+    if not variants_data:
+        return "No variants found exceeding the length threshold."
+    lines = []
+    lines.append("--- Structural Variants Summary ---")
+    lines.append(f"Total large variants detected: {len(variants_data)}\n")
+    for i, var in enumerate(variants_data, 1):
+        lines.append(f"Variant {i} | Location: chr{var['chromosome']}:{var['position']}")
+        lines.append(f"  - REF Length: {var['ref_length']} bp")
+        alt_str = ", ".join([f"{l} bp" for l in var['alt_lengths']])
+        lines.append(f"  - ALT Lengths: {alt_str}")
+        if var['genotypes']:
+            gt_str = ", ".join([f"{s}: {g}" for s, g in var['genotypes'].items()])
+            lines.append(f"  - Genotypes: {gt_str}")
+        else:
+            lines.append("  - Genotypes: None available")
+        lines.append("-" * 40)
+    return "\n".join(lines)
+
 # ────────────────────────────────────────────────────────────────────────────
 # STEP 10 — Parse VCF → Human-readable report (variants > 50bp)
 # ────────────────────────────────────────────────────────────────────────────
@@ -572,7 +645,13 @@ def step10(subset_vcf_path, workdir):
     except Exception as e:
         abort(10, f"Failed to parse VCF: {e}")
 
+    # Generate Lucas-style summary first
+    lucas_variants = extract_structural_variants(subset_vcf_path, min_length=50)
+    lucas_summary  = summarize_variants(lucas_variants)
+
     with open(out_path, "w") as o:
+        o.write(lucas_summary)
+        o.write("\n\n")
         o.write("=" * 80 + "\n")
         o.write("  PANGENOME VARIANT REPORT — Human-Readable Output\n")
         o.write(f"  Generated : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
