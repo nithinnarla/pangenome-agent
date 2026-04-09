@@ -10,6 +10,9 @@ Usage:
   python pangenome_pipeline.py --gfa chr6.gfa --vcf chr6.vcf.gz \
       --region "MM26#0#Hg_chrom6_MM26:520000-570000"
 
+  python pangenome_pipeline.py --gfa chr6.gfa --vcf chr6.vcf.gz \
+      --start 520000 --end 570000
+
 Options:
   --reset        Clear all checkpoints and run from scratch
   --skip-step N  Skip to step N if earlier steps keep erroring
@@ -67,14 +70,13 @@ def clear_checkpoints():
 # ── Docker helpers ───────────────────────────────────────────────────────────
 def docker_run(image, command, workdir, capture_output=False):
     """Run a command in a Docker container with /data mounted to workdir."""
-    cmd = ["docker", "run", "--rm",
-           "-v", f"{workdir}:/data",
-           "-w", "/data",
-           image] + command.split()
+    cmd = ["docker", "run", "--rm"]
+    if image == "odgi":
+        cmd += ["--platform", "linux/amd64"]
+    cmd += ["-v", f"{workdir}:/data", "-w", "/data", image] + command.split()
     info(f"Docker: {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=capture_output,
-                                text=True, timeout=900)
+        result = subprocess.run(cmd, capture_output=capture_output, timeout=900)
         return result
     except subprocess.TimeoutExpired:
         err("Docker command timed out after 15 minutes.")
@@ -84,8 +86,7 @@ def docker_run(image, command, workdir, capture_output=False):
         return None
 
 def check_docker():
-    result = subprocess.run(["docker", "info"],
-                            capture_output=True, text=True)
+    result = subprocess.run(["docker", "info"], capture_output=True, text=True)
     if result.returncode != 0:
         err("Docker is not running. Start Docker Desktop and retry.")
         sys.exit(1)
@@ -117,6 +118,39 @@ def abort(step_num, msg, tip=None):
     warn(f"To resume from next step: re-run with --skip-step {step_num + 1}")
     sys.exit(1)
 
+# ── Auto-detect region from GFA ──────────────────────────────────────────────
+def extract_reference_name(gfa_10_path):
+    """
+    Read P lines from GFA 1.0 and return the first reference name.
+    After vg converts 1.1 -> 1.0, P lines appear:
+      P  MM26#0#Hg_chrom6_MM26  ...
+    We grab column 2 from the first P line.
+    """
+    try:
+        with open(gfa_10_path, "rb") as f:
+            for raw in f:
+                try:
+                    line = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                if line.startswith("P\t"):
+                    parts = line.strip().split("\t")
+                    if len(parts) >= 2:
+                        return parts[1]
+    except Exception as e:
+        err(f"Could not read GFA for reference name: {e}")
+    return None
+
+def build_region(gfa_10_path, start, end):
+    """Build region string like MM26#0#Hg_chrom6_MM26:520000-570000"""
+    ref = extract_reference_name(gfa_10_path)
+    if ref is None:
+        abort(0, "Could not auto-detect reference name from GFA 1.0.",
+              "Use --region manually instead.")
+    region = f"{ref}:{start}-{end}"
+    ok(f"Auto-detected region: {region}")
+    return region
+
 # ────────────────────────────────────────────────────────────────────────────
 # STEP 1 — Resolve absolute paths
 # ────────────────────────────────────────────────────────────────────────────
@@ -131,11 +165,9 @@ def step1(gfa_path, vcf_path):
     vcf_abs = str(Path(vcf_path).resolve())
 
     if not os.path.exists(gfa_abs):
-        abort(1, f"GFA file not found: {gfa_abs}",
-              "Check the --gfa path argument.")
+        abort(1, f"GFA file not found: {gfa_abs}", "Check the --gfa path argument.")
     if not os.path.exists(vcf_abs):
-        abort(1, f"VCF file not found: {vcf_abs}",
-              "Check the --vcf path argument.")
+        abort(1, f"VCF file not found: {vcf_abs}", "Check the --vcf path argument.")
 
     ok(f"GFA: {gfa_abs}")
     ok(f"VCF: {vcf_abs}")
@@ -147,9 +179,8 @@ def step1(gfa_path, vcf_path):
 # ────────────────────────────────────────────────────────────────────────────
 def step2(gfa_path, vcf_path, workdir):
     STEP = "step2_unzip"
-    gfa_out = gfa_path.replace(".gz", "") if gfa_path.endswith(".gz") \
-              else gfa_path
-    # VCF stays as-is — we handle .gz in step 9 directly
+    gfa_out = gfa_path.replace(".gz", "") if gfa_path.endswith(".gz") else gfa_path
+
     if already_done(STEP):
         ok("Step 2 — skipping (already done)")
         return gfa_out, vcf_path
@@ -164,8 +195,7 @@ def step2(gfa_path, vcf_path, workdir):
                 shutil.copyfileobj(fi, fo)
             ok(f"GFA unzipped: {gfa_out}")
         except Exception as e:
-            abort(2, f"Failed to unzip GFA: {e}",
-                  "Verify the .gz file is not corrupted.")
+            abort(2, f"Failed to unzip GFA: {e}", "Verify the .gz file is not corrupted.")
     else:
         ok("GFA not compressed — no action needed.")
 
@@ -210,7 +240,6 @@ def step3(gfa_path, workdir):
 
     if version == "1.0":
         ok("GFA is already version 1.0 — no conversion needed.")
-        # Copy to workdir if not there
         dst = os.path.join(workdir, Path(gfa_path).name)
         if not os.path.exists(dst):
             shutil.copy2(gfa_path, dst)
@@ -219,19 +248,19 @@ def step3(gfa_path, workdir):
 
     info("GFA is version 1.1 — converting to 1.0 with vg convert...")
     gfa_filename = Path(gfa_path).name
-    result = docker_run("vg", f"vg convert -gfW {gfa_filename}",
-                        workdir, capture_output=True)
+    result = docker_run("vg", f"vg convert -gfW {gfa_filename}", workdir, capture_output=True)
 
     if result is None or result.returncode != 0:
-        abort(3, f"vg convert failed.\n  stderr: {result.stderr if result else 'N/A'}",
+        stderr = result.stderr.decode() if result and isinstance(result.stderr, bytes) else str(result.stderr if result else "N/A")
+        abort(3, f"vg convert failed.\n  stderr: {stderr}",
               "Verify Docker image 'vg' is available and GFA file is valid.")
 
-    with open(gfa_10_path, "w") as f:
-        f.write(result.stdout)
+    stdout_data = result.stdout if isinstance(result.stdout, bytes) else result.stdout.encode()
+    with open(gfa_10_path, "wb") as f:
+        f.write(stdout_data)
 
     if os.path.getsize(gfa_10_path) == 0:
-        abort(3, "Converted GFA is empty.",
-              "The vg convert command may have failed silently.")
+        abort(3, "Converted GFA is empty.", "The vg convert command may have failed silently.")
 
     ok(f"GFA converted to 1.0: {gfa_10_path}")
     save_checkpoint(STEP)
@@ -252,11 +281,9 @@ def step4(gfa_10_path, workdir):
     info("── STEP 4: Building ODGI graph (.og) ─────────────────────────")
     gfa_name = Path(gfa_10_path).name
 
-    result = docker_run("odgi", f"odgi build -g {gfa_name} -o {og_name} -P",
-                        workdir)
+    result = docker_run("odgi", f"build -g {gfa_name} -o {og_name} -P", workdir)
     if result is None or result.returncode != 0:
-        abort(4, f"odgi build failed.\n  stderr: {result.stderr if result else 'N/A'}",
-              "Verify the GFA 1.0 file is valid.")
+        abort(4, "odgi build failed.", "Verify the GFA 1.0 file is valid.")
 
     if not os.path.exists(og_path):
         abort(4, f"Expected .og file not created: {og_path}")
@@ -280,11 +307,9 @@ def step5(og_path, workdir):
     info("── STEP 5: Sorting ODGI graph ────────────────────────────────")
     og_name = Path(og_path).name
 
-    result = docker_run("odgi",
-                        f"odgi sort -O -i {og_name} -o {sorted_name} -P",
-                        workdir)
+    result = docker_run("odgi", f"sort -O -i {og_name} -o {sorted_name} -P", workdir)
     if result is None or result.returncode != 0:
-        abort(5, f"odgi sort failed.\n  stderr: {result.stderr if result else 'N/A'}")
+        abort(5, "odgi sort failed.")
 
     if not os.path.exists(sorted_path):
         abort(5, f"Sorted .og file not created: {sorted_path}")
@@ -310,18 +335,16 @@ def step6(sorted_og_path, region, workdir):
     sorted_name = Path(sorted_og_path).name
 
     result = docker_run("odgi",
-                        f"odgi extract -i {sorted_name} -r {region} -o - -P -c 0 -E",
+                        f"extract -i {sorted_name} -r {region} -o - -P -c 0 -E",
                         workdir, capture_output=True)
 
     if result is None or result.returncode != 0:
-        abort(6,
-              f"odgi extract failed.\n  stderr: {result.stderr if result else 'N/A'}",
-              "Check that the region reference name matches your GFA.\n"
-              "  Tip: grep '^P' your.gfa | cut -f2 | head -1")
+        abort(6, "odgi extract failed.",
+              "Check that the region reference name matches your GFA.")
 
+    data = result.stdout if isinstance(result.stdout, bytes) else result.stdout.encode("latin-1")
     with open(sub_path, "wb") as f:
-        data = result.stdout
-        f.write(data.encode() if isinstance(data, str) else data)
+        f.write(data)
 
     if os.path.getsize(sub_path) == 0:
         abort(6, f"Subgraph is empty — region '{region}' may not exist in this graph.")
@@ -345,14 +368,14 @@ def step7(sub_og_path, workdir):
     info("── STEP 7: Converting subgraph .og → .gfa ────────────────────")
     sub_name = Path(sub_og_path).name
 
-    result = docker_run("odgi", f"odgi view -i {sub_name} -g",
-                        workdir, capture_output=True)
+    result = docker_run("odgi", f"view -i {sub_name} -g", workdir, capture_output=True)
 
     if result is None or result.returncode != 0:
-        abort(7, f"odgi view failed.\n  stderr: {result.stderr if result else 'N/A'}")
+        abort(7, "odgi view failed.")
 
-    with open(sub_gfa_path, "w") as f:
-        f.write(result.stdout)
+    data = result.stdout if isinstance(result.stdout, bytes) else result.stdout.encode()
+    with open(sub_gfa_path, "wb") as f:
+        f.write(data)
 
     if os.path.getsize(sub_gfa_path) == 0:
         abort(7, "Subgraph GFA is empty after conversion.")
@@ -380,8 +403,9 @@ def step8(sub_gfa_path):
 
     nodes = []
     try:
-        with open(sub_gfa_path) as f:
-            for line in f:
+        with open(sub_gfa_path, "rb") as f:
+            for raw in f:
+                line = raw.decode("utf-8", errors="ignore")
                 parts = line.strip().split("\t")
                 if parts and parts[0] == "S":
                     try:
@@ -392,7 +416,7 @@ def step8(sub_gfa_path):
         abort(8, f"Cannot read subgraph GFA: {e}")
 
     if not nodes:
-        abort(8, "No segment lines (S) found in subgraph. The subgraph may be empty.")
+        abort(8, "No segment lines (S) found in subgraph.")
 
     min_n, max_n = min(nodes), max(nodes)
     ok(f"Min node: {min_n}  |  Max node: {max_n}  |  Total nodes: {len(nodes)}")
@@ -445,8 +469,7 @@ def step9(vcf_path, min_n, max_n, workdir):
                 else:
                     skipped += 1
     except Exception as e:
-        abort(9, f"Failed to read VCF: {e}",
-              "Verify the VCF file is not corrupted.")
+        abort(9, f"Failed to read VCF: {e}", "Verify the VCF file is not corrupted.")
 
     with open(subset_path, "w") as f:
         f.writelines(headers)
@@ -455,7 +478,6 @@ def step9(vcf_path, min_n, max_n, workdir):
     ok(f"VCF filtered — kept: {len(kept)} variants, skipped: {skipped}")
     if len(kept) == 0:
         warn("No variants matched the node range.")
-        warn("The VCF may use different node IDs. Check VCF format with Lucas.")
 
     save_checkpoint(STEP)
     return subset_path
@@ -488,25 +510,23 @@ def step10(subset_vcf_path, workdir):
                     malformed += 1
                     continue
 
-                chrom = parts[0]
-                pos   = parts[1]
-                vid   = parts[2]
-                ref   = parts[3]
-                alt   = parts[4]
-                qual  = parts[5] if len(parts) > 5 else "."
-                filt  = parts[6] if len(parts) > 6 else "."
+                chrom  = parts[0]
+                pos    = parts[1]
+                vid    = parts[2]
+                ref    = parts[3]
+                alt    = parts[4]
+                qual   = parts[5] if len(parts) > 5 else "."
+                filt   = parts[6] if len(parts) > 6 else "."
                 info_f = parts[7] if len(parts) > 7 else "."
 
                 ref_len = len(ref)
                 alt_len = len(alt) if alt not in (".", "*") else 0
                 var_len = max(ref_len, alt_len)
 
-                # Only variants > 50bp
                 if var_len <= 50:
                     skipped_small += 1
                     continue
 
-                # Variant type
                 if ref_len == alt_len:
                     vtype = "SNP" if ref_len == 1 else "MNP"
                 elif alt_len > ref_len:
@@ -516,10 +536,8 @@ def step10(subset_vcf_path, workdir):
                 else:
                     vtype = "COMPLEX_SV"
 
-                # Node traversal haplotype from variant ID
                 haps = re.findall(r"[><](\d+)", vid)
 
-                # INFO field parsing
                 info_dict = {}
                 if info_f not in (".", ""):
                     for item in info_f.split(";"):
@@ -529,7 +547,6 @@ def step10(subset_vcf_path, workdir):
                         else:
                             info_dict[item] = True
 
-                # Genotype fields
                 gt_data = {}
                 if len(parts) > 8:
                     fmt_keys = parts[8].split(":")
@@ -552,9 +569,7 @@ def step10(subset_vcf_path, workdir):
     except Exception as e:
         abort(10, f"Failed to parse VCF: {e}")
 
-    # ── Write report ─────────────────────────────────────────────────────────
     with open(out_path, "w") as o:
-
         o.write("=" * 80 + "\n")
         o.write("  PANGENOME VARIANT REPORT — Human-Readable Output\n")
         o.write(f"  Generated : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -578,11 +593,7 @@ def step10(subset_vcf_path, workdir):
         o.write("\n")
 
         if not variants:
-            o.write("No variants > 50bp found in this region.\n\n")
-            o.write("Possible reasons:\n")
-            o.write("  1. The region contains only small SNPs\n")
-            o.write("  2. VCF node IDs do not overlap with the subgraph\n")
-            o.write("  3. The VCF subset step (Step 9) returned no matches\n")
+            o.write("No variants > 50bp found in this region.\n")
         else:
             o.write("=" * 80 + "\n")
             o.write("  VARIANTS\n")
@@ -619,26 +630,26 @@ def step10(subset_vcf_path, workdir):
                 o.write("\n")
 
     ok(f"Report written: {out_path}")
-    ok(f"Variants reported: {len(variants)}  |  Skipped (≤50bp): {skipped_small}")
+    ok(f"Variants reported: {len(variants)}  |  Skipped (<=50bp): {skipped_small}")
     save_checkpoint(STEP)
     return out_path
 
 # ────────────────────────────────────────────────────────────────────────────
-# Final checkpoint summary
+# Final summary
 # ────────────────────────────────────────────────────────────────────────────
 def print_summary(output_path):
     done = load_checkpoints()
     steps = [
-        ("step1_paths",   "Step 1  — Resolve paths"),
-        ("step2_unzip",   "Step 2  — Decompress files"),
-        ("step3_version", "Step 3  — GFA version check/convert"),
-        ("step4_build_og","Step 4  — Build ODGI graph"),
-        ("step5_sort",    "Step 5  — Sort graph"),
-        ("step6_extract", "Step 6  — Extract region"),
-        ("step7_view",    "Step 7  — Subgraph → GFA"),
-        ("step8_nodes",   "Step 8  — Get node range"),
-        ("step9_filter",  "Step 9  — Filter VCF"),
-        ("step10_parse",  "Step 10 — Parse → human-readable"),
+        ("step1_paths",    "Step 1  — Resolve paths"),
+        ("step2_unzip",    "Step 2  — Decompress files"),
+        ("step3_version",  "Step 3  — GFA version check/convert"),
+        ("step4_build_og", "Step 4  — Build ODGI graph"),
+        ("step5_sort",     "Step 5  — Sort graph"),
+        ("step6_extract",  "Step 6  — Extract region"),
+        ("step7_view",     "Step 7  — Subgraph → GFA"),
+        ("step8_nodes",    "Step 8  — Get node range"),
+        ("step9_filter",   "Step 9  — Filter VCF"),
+        ("step10_parse",   "Step 10 — Parse → human-readable"),
     ]
     print()
     print(BOLD + "=" * 60 + RESET)
@@ -655,66 +666,28 @@ def print_summary(output_path):
 # ────────────────────────────────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────────────────────────────────
-# ── Auto-detect region from converted GFA 1.0 ────────────────────────────────
-def extract_reference_name(gfa_10_path):
-    """
-    Read P lines from a GFA 1.0 file and return the first reference name.
-    After vg converts 1.1 → 1.0, P lines appear in format:
-      P  MM26#0#Hg_chrom6_MM26  ...
-    We grab column 2 (index 1) from the first P line.
-    """
-    try:
-        with open(gfa_10_path, "rb") as f:
-            for raw in f:
-                try:
-                    line = raw.decode("utf-8", errors="ignore")
-                except Exception:
-                    continue
-                if line.startswith("P"):
-                    parts = line.strip().split("\t")
-                    if len(parts) >= 2:
-                        return parts[1]
-    except Exception as e:
-        err(f"Could not read GFA for reference name: {e}")
-    return None
-
-def build_region(gfa_10_path, start, end):
-    """
-    Build a region string like MM26#0#Hg_chrom6_MM26:520000-570000
-    from the converted GFA 1.0 file + user-supplied coordinates.
-    """
-    ref = extract_reference_name(gfa_10_path)
-    if ref is None:
-        abort(0, "Could not auto-detect reference name from GFA 1.0.",
-              "Use --region manually, e.g. --region MM26#0#Hg_chrom6_MM26:520000-570000")
-    region = f"{ref}:{start}-{end}"
-    ok(f"Auto-detected region: {region}")
-    return region
-
 def main():
     parser = argparse.ArgumentParser(
         description="Pangenome Pipeline 4 — VCF Region Extractor + Human-Readable Parser"
     )
-    parser.add_argument("--gfa",      required=True, help="Input .gfa or .gfa.gz")
-    parser.add_argument("--vcf",      required=True, help="Input .vcf or .vcf.gz")
-    parser.add_argument("--region",   required=False, default=None,
+    parser.add_argument("--gfa",     required=True, help="Input .gfa or .gfa.gz")
+    parser.add_argument("--vcf",     required=True, help="Input .vcf or .vcf.gz")
+    parser.add_argument("--region",  required=False, default=None,
         help='Region string e.g. "MM26#0#Hg_chrom6_MM26:520000-570000" — auto-detected if not provided')
-    parser.add_argument("--start",    type=int, default=None,
-        help="Region start coordinate (used with --end when --region is not given)")
-    parser.add_argument("--end",      type=int, default=None,
-        help="Region end coordinate (used with --start when --region is not given)")
-    parser.add_argument("--workdir",  default="pipeline_output",
+    parser.add_argument("--start",   type=int, default=None,
+        help="Region start coordinate (used with --end when --region not given)")
+    parser.add_argument("--end",     type=int, default=None,
+        help="Region end coordinate (used with --start when --region not given)")
+    parser.add_argument("--workdir", default="pipeline_output",
         help="Output directory for all intermediate + final files")
-    parser.add_argument("--reset",    action="store_true",
+    parser.add_argument("--reset",   action="store_true",
         help="Clear checkpoints and run from scratch")
     parser.add_argument("--skip-step", type=int, dest="skip_step",
         help="Mark steps 1 through N-1 as done and start from step N")
     args = parser.parse_args()
 
-    # Validate region args
-    if args.region is None:
-        if args.start is None or args.end is None:
-            parser.error("Provide either --region or both --start and --end.")
+    if args.region is None and (args.start is None or args.end is None):
+        parser.error("Provide either --region or both --start and --end.")
 
     os.makedirs(args.workdir, exist_ok=True)
 
@@ -726,7 +699,7 @@ def main():
     if args.region:
         print(f"  Region : {args.region}")
     else:
-        print(f"  Region : auto-detect from GFA (start={args.start}, end={args.end})")
+        print(f"  Region : auto-detect (start={args.start}, end={args.end})")
     print(f"  Output : {args.workdir}")
     print("=" * 60)
     print(RESET, flush=True)
@@ -736,45 +709,40 @@ def main():
 
     if args.skip_step:
         step_keys = [
-            "step1_paths","step2_unzip","step3_version",
-            "step4_build_og","step5_sort","step6_extract",
-            "step7_view","step8_nodes","step9_filter"
+            "step1_paths", "step2_unzip", "step3_version",
+            "step4_build_og", "step5_sort", "step6_extract",
+            "step7_view", "step8_nodes", "step9_filter"
         ]
         warn(f"Skipping to step {args.skip_step} — marking steps 1–{args.skip_step-1} complete.")
         for i in range(min(args.skip_step - 1, len(step_keys))):
             if step_keys[i] not in load_checkpoints():
                 save_checkpoint(step_keys[i])
 
-    # Pre-flight
     check_docker()
     check_images()
 
     workdir = str(Path(args.workdir).resolve())
 
-    # Run pipeline
     gfa_abs, vcf_abs = step1(args.gfa, args.vcf)
     gfa_unc, vcf_path = step2(gfa_abs, vcf_abs, workdir)
 
-    # Ensure GFA is in workdir for Docker volume mount
     gfa_wdir = os.path.join(workdir, Path(gfa_unc).name)
     if not os.path.exists(gfa_wdir):
         shutil.copy2(gfa_unc, gfa_wdir)
 
     gfa_10 = step3(gfa_wdir, workdir)
 
-    # Build region string — explicit or auto-detected from GFA
     if args.region:
         region = args.region
     else:
         region = build_region(gfa_10, args.start, args.end)
 
-    og_path      = step4(gfa_10, workdir)
-    sorted_og    = step5(og_path, workdir)
-    sub_og       = step6(sorted_og, region, workdir)
-    sub_gfa      = step7(sub_og, workdir)
+    og_path   = step4(gfa_10, workdir)
+    sorted_og = step5(og_path, workdir)
+    sub_og    = step6(sorted_og, region, workdir)
+    sub_gfa   = step7(sub_og, workdir)
     min_n, max_n = step8(sub_gfa)
 
-    # VCF to workdir
     vcf_wdir = os.path.join(workdir, Path(vcf_path).name)
     if not os.path.exists(vcf_wdir):
         shutil.copy2(vcf_path, vcf_wdir)
