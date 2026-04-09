@@ -99,7 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gfa_path = text.strip()
         if not Path(gfa_path).exists():
             await update.message.reply_text(
-                f"File not found: {gfa_path}\n\nPlease check the path and try again."
+                f"⚠️ File not found: {gfa_path}\n\nPlease check the path and try again."
             )
             return
         user_state[uid]["gfa"] = gfa_path
@@ -114,7 +114,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vcf_path = text.strip()
         if not Path(vcf_path).exists():
             await update.message.reply_text(
-                f"File not found: {vcf_path}\n\nPlease check the path and try again."
+                f"⚠️ File not found: {vcf_path}\n\nPlease check the path and try again."
             )
             return
 
@@ -213,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if start and end:
             user_state[uid] = {"step": "waiting_gfa", "start": start, "end": end}
             await update.message.reply_text(
-                f"Got it — region {start} to {end}\n\n"
+                f"🌱 Got it — region {start} to {end}\n\n"
                 f"Please send me the full path to your GFA file:\n"
                 f"Example: /Users/yourname/pangenome_work/chr6.gfa"
             )
