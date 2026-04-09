@@ -19,7 +19,7 @@ logger = logging.getLogger("pangenome_bot")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 PIPELINE_PATH = Path(os.environ.get(
     "PIPELINE_PATH",
-    str(Path.home() / "ClawBio/skills/soybean-pangenome/pangenome_pipeline.py")
+    str(Path(__file__).parent / "pangenome_pipeline.py")
 ))
 
 # --- Conversation state per user ---
