@@ -133,7 +133,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"GFA: {gfa}\n"
             f"VCF: {vcf_path}\n"
             f"Region: {start} to {end}\n\n"
-            f"This may take a few minutes."
+            f"This may take a few minutes ⏳"
         )
 
         # Build pipeline command
