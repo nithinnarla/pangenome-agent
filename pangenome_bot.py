@@ -105,7 +105,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[uid]["gfa"] = gfa_path
         user_state[uid]["step"] = "waiting_vcf"
         await update.message.reply_text(
-            "GFA file found.\n\nNow send me the full path to your VCF or VCF.gz file:"
+            "✅ GFA file found.\n\nNow send me the full path to your VCF or VCF.gz file:"
         )
         return
 
@@ -129,7 +129,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         workdir.mkdir(exist_ok=True)
 
         await update.message.reply_text(
-            f"Running pipeline...\n\n"
+            f"🔬 Running pipeline...\n\n"
             f"GFA: {gfa}\n"
             f"VCF: {vcf_path}\n"
             f"Region: {start} to {end}\n\n"
@@ -158,7 +158,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except asyncio.TimeoutError:
             user_state.pop(uid, None)
             await update.message.reply_text(
-                "Pipeline timed out after 10 minutes. Try a smaller region."
+                "⏱️ Pipeline timed out after 10 minutes. Try a smaller region."
             )
             return
         except Exception as e:
@@ -189,14 +189,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Send inline if small enough, otherwise send as file
-        header = f"Structural variants found in region {start}-{end}\n\n"
+        header = f"✅ Structural variants found in region {start}-{end}\n\n"
         max_inline = 4000 - len(header)
 
         if len(result) <= max_inline:
             await update.message.reply_text(header + result)
         else:
             await update.message.reply_text(
-                header + "Result is large — sending as file."
+                header + "✅ Result is large — sending as file."
             )
             await update.message.reply_document(
                 document=output_file.open("rb"),
