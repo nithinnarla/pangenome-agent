@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Soybean Pangenome Telegram Bot
+Pangenome Agent Telegram Bot
 Lucas Borges dos Santos + Nithin Narla — April 2026
 
 Runs pangenome_pipeline.py and returns structural variants to the user via Telegram.
@@ -213,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if start and end:
             user_state[uid] = {"step": "waiting_gfa", "start": start, "end": end}
             await update.message.reply_text(
-                f"🌱 Got it — region {start} to {end}\n\n"
+                f"🧬 Got it — region {start} to {end}\n\n"
                 f"Please send me the full path to your GFA file:\n"
                 f"Example: /Users/yourname/pangenome_work/chr6.gfa"
             )
@@ -245,7 +245,7 @@ def main():
         print("Make sure pangenome_pipeline.py is in the same directory as this bot.")
         sys.exit(1)
 
-    logger.info("Starting Soybean Pangenome Bot")
+    logger.info("Starting Pangenome Agent Bot")
     logger.info(f"Pipeline: {PIPELINE_PATH}")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -254,7 +254,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Soybean Pangenome Bot is running. Press Ctrl+C to stop.")
+    print("Pangenome Agent Bot is running. Press Ctrl+C to stop.")
     app.run_polling()
 
 
