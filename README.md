@@ -66,7 +66,7 @@ Target venue: Bioinformatics / ISMB / PLOS Computational Biology 2027
 
 ## Authors
 Lucas Borges dos Santos - Conceptualization, Pipeline development, Methodology design
-Nithin Narla - Agent implementation, Code optimization
+Nithin Narla - Agent implementation, Python pipeline development, ClawBio skill integration, Telegram bot development, Code optimization
 University of Illinois Urbana-Champaign
 
 ## License
